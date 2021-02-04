@@ -767,7 +767,6 @@ private:
 	// [property key]_[value] => only for selector
 	mutable std::map<std::string, TBonusListPtr > cachedRequests;
 
-	void getBonusesRec(BonusList &out, const CSelector &selector, const CSelector &limit) const;
 	void getAllBonusesRec(BonusList &out) const;
 	TConstBonusListPtr getAllBonusesWithoutCaching(const CSelector &selector, const CSelector &limit, const CBonusSystemNode *root = nullptr) const;
 	std::shared_ptr<Bonus> update(const std::shared_ptr<Bonus> & b) const;
@@ -790,6 +789,7 @@ public:
 	void getRedAncestors(TNodes &out);
 	void getRedChildren(TNodes &out);
 	void getRedDescendants(TNodes &out);
+	void getAllParents(TCNodes & out) const;
 	std::shared_ptr<Bonus> getBonusLocalFirst(const CSelector &selector);
 
 	void attachTo(CBonusSystemNode *parent);

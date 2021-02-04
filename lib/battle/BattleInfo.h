@@ -137,8 +137,9 @@ public:
 
 	void localInit();
 
-	static void setupBonusesFromTown(const CGTownInstance * town, BattleInfo * curB); //besieged city may contain buildings with negative bonuses for enemy army.
-	static void setupBonusesFromUnits(BattleInfo * curB); //besieged city may contain buildings with negative bonuses for enemy army.
+	static void setupBonusesFromTownToEnemy(const CGTownInstance * town, BattleInfo * curB); //besieged city may contain buildings with negative bonuses for enemy army
+	static void setupBonusesFromTownToBothSides(const CGTownInstance * town, BattleInfo * curB); //if visiting hero is town defender during siege, he/she should receive bonuses
+	static void setupBonusesFromUnitsToEnemy(BattleInfo * curB);
 	static BattleInfo * setupBattle(int3 tile, ETerrainType terrain, BFieldType battlefieldType, const CArmedInstance * armies[2], const CGHeroInstance * heroes[2], bool creatureBank, const CGTownInstance * town);
 
 	ui8 whatSide(PlayerColor player) const;
@@ -147,7 +148,8 @@ public:
 	static int battlefieldTypeToTerrain(int bfieldType); //converts above to ERM BI format
 
 private:
-	static void addOnlyEnemyArmyBonuses(const BonusList & bonusList, BattleInfo * curB, BattleInfo::BattleSide side);
+	static void addOnlyEnemyArmyBonuses(const BonusList & bonusList, BattleInfo * curB, BattleInfo::BattleSide enemySide);
+	STRONG_INLINE static std::shared_ptr<Bonus> makeBonusForEnemy(const std::shared_ptr<Bonus> & b, PlayerColor & enemyColor);
 };
 
 
