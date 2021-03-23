@@ -26,7 +26,6 @@
 
 #define FOREACH_PARENT(pname) 	TNodes lparents; getParents(lparents); for(CBonusSystemNode *pname : lparents)
 #define FOREACH_RED_CHILD(pname) 	TNodes lchildren; getRedChildren(lchildren); for(CBonusSystemNode *pname : lchildren)
-#define FOREACH_RED_PARENT(pname) 	TNodes lparents; getRedParents(lparents); for(CBonusSystemNode *pname : lparents)
 
 #define BONUS_NAME(x) { #x, Bonus::x },
 	const std::map<std::string, Bonus::BonusType> bonusNameMap = { BONUS_LIST };
@@ -71,7 +70,8 @@ const std::map<std::string, TLimiterPtr> bonusLimiterMap =
 	{"DRAGON_NATURE", std::make_shared<HasAnotherBonusLimiter>(Bonus::DRAGON_NATURE)},
 	{"IS_UNDEAD", std::make_shared<HasAnotherBonusLimiter>(Bonus::UNDEAD)},
 	{"CREATURE_NATIVE_TERRAIN", std::make_shared<CreatureTerrainLimiter>()},
-	{"CREATURE_FACTION", std::make_shared<CreatureFactionLimiter>()}
+	{"CREATURE_FACTION", std::make_shared<CreatureFactionLimiter>()},
+	{"OPPOSITE_SIDE", std::make_shared<OppositeSideLimiter>()}
 };
 
 const std::map<std::string, TPropagatorPtr> bonusPropagatorMap =
@@ -426,9 +426,6 @@ int BonusList::totalValue() const
 
 	for(std::shared_ptr<Bonus> b : bonuses)
 	{
-		if(b->effectRange == Bonus::ONLY_ENEMY_ARMY)
-			continue;
-
 		switch(b->valType)
 		{
 		case Bonus::BASE_NUMBER:
@@ -527,7 +524,8 @@ void BonusList::getBonuses(BonusList & out, const CSelector &selector, const CSe
 	for (auto & b : bonuses)
 	{
 		//add matching bonuses that matches limit predicate or have NO_LIMIT if no given predicate
-		if(selector(b.get()) && ((!limit && b->effectRange == Bonus::NO_LIMIT) || ((bool)limit && limit(b.get()))))
+		auto noFightLimit = b->effectRange == Bonus::NO_LIMIT || b->effectRange == Bonus::ONLY_ENEMY_ARMY;
+		if(selector(b.get()) && ((!limit && noFightLimit) || ((bool)limit && limit(b.get()))))
 			out.push_back(b);
 	}
 }
@@ -598,10 +596,8 @@ CSelector IBonusBearer::anaffectedByMoraleSelector =
 Selector::type()(Bonus::NON_LIVING)
 .Or(Selector::type()(Bonus::UNDEAD))
 .Or(Selector::type()(Bonus::SIEGE_WEAPON))
-.Or(Selector::effectRange()(Bonus::ONLY_ENEMY_ARMY).Not()
-	.And(Selector::type()(Bonus::NO_MORALE)
-		.Or(Selector::type()(Bonus::BLOCK_MORALE))
-	));
+.Or(Selector::type()(Bonus::NO_MORALE))
+.Or(Selector::type()(Bonus::BLOCK_MORALE));
 
 CSelector IBonusBearer::moraleSelector = Selector::type()(Bonus::MORALE);
 CSelector IBonusBearer::luckSelector = Selector::type()(Bonus::LUCK);
@@ -791,6 +787,8 @@ int IBonusBearer::getPrimSkillLevel(PrimarySkill::PrimarySkill id) const
 	static const std::string keyAllSkills = "type_PRIMARY_SKILL";
 	auto allSkills = getBonuses(selectorAllSkills, keyAllSkills);
 	auto ret = allSkills->valOfBonuses(Selector::subtype()(id));
+	auto minSkillValue = (id == PrimarySkill::SPELL_POWER || id == PrimarySkill::KNOWLEDGE) ? 1 : 0;
+	vstd::amax(ret, minSkillValue); //otherwise, some artifacts may cause negative skill value effect
 	return ret; //sp=0 works in old saves
 }
 
@@ -832,7 +830,47 @@ std::shared_ptr<const Bonus> IBonusBearer::getBonus(const CSelector &selector) c
 	return bonuses->getFirst(Selector::all);
 }
 
-std::shared_ptr<Bonus> CBonusSystemNode::getBonusLocalFirst(const CSelector &selector)
+const CStack * retrieveStackBattle(const CBonusSystemNode * node)
+{
+	switch (node->getNodeType())
+	{
+	case CBonusSystemNode::STACK_BATTLE:
+		return static_cast<const CStack*>(node);
+	default:
+		return nullptr;
+	}
+}
+
+const CStackInstance * retrieveStackInstance(const CBonusSystemNode * node)
+{
+	switch (node->getNodeType())
+	{
+	case CBonusSystemNode::STACK_INSTANCE:
+		return (static_cast<const CStackInstance *>(node));
+	case CBonusSystemNode::STACK_BATTLE:
+		return (static_cast<const CStack*>(node))->base;
+	default:
+		return nullptr;
+	}
+}
+
+PlayerColor CBonusSystemNode::retrieveNodeOwner(const CBonusSystemNode * node)
+{
+	if (!node)
+		return PlayerColor::CANNOT_DETERMINE;
+
+	const CStack * stack = retrieveStackBattle(node);
+	if (stack)
+		return stack->owner;
+
+	const CStackInstance * csi = retrieveStackInstance(node);
+	if (csi && csi->armyObj)
+		return csi->armyObj->getOwner();
+
+	return PlayerColor::NEUTRAL;
+}
+
+std::shared_ptr<Bonus> CBonusSystemNode::getBonusLocalFirst(const CSelector & selector)
 {
 	auto ret = bonuses.getFirst(selector);
 	if(ret)
@@ -848,7 +886,7 @@ std::shared_ptr<Bonus> CBonusSystemNode::getBonusLocalFirst(const CSelector &sel
 	return nullptr;
 }
 
-std::shared_ptr<const Bonus> CBonusSystemNode::getBonusLocalFirst( const CSelector &selector ) const
+std::shared_ptr<const Bonus> CBonusSystemNode::getBonusLocalFirst(const CSelector & selector) const
 {
 	return (const_cast<CBonusSystemNode*>(this))->getBonusLocalFirst(selector);
 }
@@ -871,11 +909,10 @@ void CBonusSystemNode::getParents(TNodes &out)
 	}
 }
 
-void CBonusSystemNode::getAllParents(TCNodes & out) const /*retrieves list of parent nodes (nodes to inherit bonuses from) */
+void CBonusSystemNode::getAllParents(TCNodes & out) const //retrieves list of parent nodes (nodes to inherit bonuses from)
 {
-	for(auto & cparent : parents)
+	for(auto parent : parents)
 	{
-		const CBonusSystemNode * parent = cparent;
 		out.insert(parent);
 		parent->getAllParents(out);
 	}
@@ -1070,7 +1107,15 @@ void CBonusSystemNode::detachFrom(CBonusSystemNode *parent)
 	else
 		removedRedDescendant(parent);
 
-	parents -= parent;
+	if(vstd::contains(parents, parent))
+	{
+		parents -= parent;
+	}
+	else
+	{
+		logBonus->error("Error on Detach. Node %s (nodeType=%d) has not parent %s (nodeType=%d)"
+			, nodeShortInfo(), nodeType, parent->nodeShortInfo(), parent->nodeType);
+	}
 	parent->childDetached(this);
 	CBonusSystemNode::treeHasChanged();
 }
@@ -1145,6 +1190,7 @@ bool CBonusSystemNode::actsAsBonusSourceOnly() const
 	case CREATURE:
 	case ARTIFACT:
 	case ARTIFACT_INSTANCE:
+	case TOWN:
 		return true;
 	default:
 		return false;
@@ -1183,14 +1229,13 @@ void CBonusSystemNode::newChildAttached(CBonusSystemNode *child)
 
 void CBonusSystemNode::childDetached(CBonusSystemNode *child)
 {
-	if (vstd::contains(children, child))
+	if(vstd::contains(children, child))
 		children -= child;
 	else
 	{
-		logBonus->error("Error! %s #cannot be detached from# %s", child->nodeName(), nodeName());
-		throw std::runtime_error("internal error");
+		logBonus->error("Error on Detach. Node %s (nodeType=%d) is not a child of %s (nodeType=%d)"
+			, child->nodeShortInfo(), child->nodeType, nodeShortInfo(), nodeType);
 	}
-
 }
 
 void CBonusSystemNode::detachFromAll()
@@ -1211,13 +1256,23 @@ std::string CBonusSystemNode::nodeName() const
 		: std::string("Bonus system node of type ") + typeid(*this).name();
 }
 
+std::string CBonusSystemNode::nodeShortInfo() const
+{
+	std::ostringstream str;
+	str << "'" << typeid(* this).name() << "'";
+	description.length() > 0 
+		? str << " (" << description << ")"
+		: str << " (no description)";
+	return str.str();
+}
+
 void CBonusSystemNode::deserializationFix()
 {
 	exportBonuses();
 
 }
 
-void CBonusSystemNode::getRedParents(TNodes &out)
+void CBonusSystemNode::getRedParents(TNodes & out)
 {
 	FOREACH_PARENT(pname)
 	{
@@ -1255,14 +1310,37 @@ void CBonusSystemNode::getRedChildren(TNodes &out)
 	}
 }
 
-void CBonusSystemNode::newRedDescendant(CBonusSystemNode *descendant)
+void CBonusSystemNode::newRedDescendant(CBonusSystemNode * descendant)
 {
 	for(auto b : exportedBonuses)
+	{
 		if(b->propagator)
 			descendant->propagateBonus(b);
+	}
+	TNodes redParents;
+	getRedAncestors(redParents); //get all red parents recursively
 
-	FOREACH_RED_PARENT(parent)
-		parent->newRedDescendant(descendant);
+	//it's not in the 'getRedParents' due to infinite recursion loop.
+	//it's actual only for battle, otherwise, when garrison hero is linking to the town, town's 'children' is already empty
+	if(descendant->nodeType == BATTLE && nodeType == TOWN) //acts as a pure bonus source, but has bonus bearers.
+	{
+		for(auto child : children)
+		{
+			for(auto b : child->exportedBonuses)
+			{
+				if(b->propagator && b->propagator->getPropagatorType() == BATTLE)
+					descendant->propagateBonus(b);
+			}
+		}
+	}
+	for(auto parent : redParents)
+	{
+		for(auto b : parent->exportedBonuses)
+		{
+			if(b->propagator)
+				descendant->propagateBonus(b);
+		}
+	}
 }
 
 void CBonusSystemNode::removedRedDescendant(CBonusSystemNode *descendant)
@@ -1271,15 +1349,26 @@ void CBonusSystemNode::removedRedDescendant(CBonusSystemNode *descendant)
 		if(b->propagator)
 			descendant->unpropagateBonus(b);
 
-	FOREACH_RED_PARENT(parent)
-		parent->removedRedDescendant(descendant);
+	TNodes redParents;
+	getRedAncestors(redParents); //get all red parents recursively
+
+	for (auto parent : redParents)
+	{
+		for (auto b : parent->exportedBonuses)
+			if (b->propagator)
+				descendant->unpropagateBonus(b);
+	}
 }
 
 void CBonusSystemNode::getRedAncestors(TNodes &out)
 {
 	getRedParents(out);
-	FOREACH_RED_PARENT(p)
-		p->getRedAncestors(out);
+
+	TNodes redParents; 
+	getRedParents(redParents);
+	
+	for(CBonusSystemNode * parent : redParents)
+		parent->getRedAncestors(out);
 }
 
 void CBonusSystemNode::getRedDescendants(TNodes &out)
@@ -1330,7 +1419,7 @@ void CBonusSystemNode::setNodeType(CBonusSystemNode::ENodeTypes type)
 	nodeType = type;
 }
 
-BonusList& CBonusSystemNode::getExportedBonusList()
+BonusList & CBonusSystemNode::getExportedBonusList()
 {
 	return exportedBonuses;
 }
@@ -1689,30 +1778,6 @@ namespace Selector
 		dummy.type = type;
 		dummy.subtype = subtype;
 		return sel(&dummy);
-	}
-}
-
-const CStack * retrieveStackBattle(const CBonusSystemNode * node)
-{
-	switch(node->getNodeType())
-	{
-	case CBonusSystemNode::STACK_BATTLE:
-		return static_cast<const CStack*>(node);
-	default:
-		return nullptr;
-	}
-}
-
-const CStackInstance * retrieveStackInstance(const CBonusSystemNode * node)
-{
-	switch(node->getNodeType())
-	{
-	case CBonusSystemNode::STACK_INSTANCE:
-		return (static_cast<const CStackInstance *>(node));
-	case CBonusSystemNode::STACK_BATTLE:
-		return (static_cast<const CStack*>(node))->base;
-	default:
-		return nullptr;
 	}
 }
 
@@ -2115,6 +2180,23 @@ StackOwnerLimiter::StackOwnerLimiter()
 StackOwnerLimiter::StackOwnerLimiter(PlayerColor Owner)
 	: owner(Owner)
 {
+}
+
+OppositeSideLimiter::OppositeSideLimiter()
+	: owner(PlayerColor::CANNOT_DETERMINE)
+{
+}
+
+OppositeSideLimiter::OppositeSideLimiter(PlayerColor Owner)
+	: owner(Owner)
+{
+}
+
+int OppositeSideLimiter::limit(const BonusLimitationContext & context) const
+{
+	auto contextOwner = CBonusSystemNode::retrieveNodeOwner(& context.node);
+	auto decision = (owner == contextOwner || owner == PlayerColor::CANNOT_DETERMINE) ? ILimiter::DISCARD : ILimiter::ACCEPT;
+	return decision;
 }
 
 // Aggregate/Boolean Limiters
