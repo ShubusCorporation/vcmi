@@ -345,7 +345,7 @@ public:
 	void afterAddToMap(CMap * map) override;
 	static void reset();
 
-	STRONG_INLINE bool isBattleOutsideTown(const CGHeroInstance * defendingHero) const
+	inline bool isBattleOutsideTown(const CGHeroInstance * defendingHero) const
 	{
 		return defendingHero && garrisonHero && defendingHero != garrisonHero;
 	}

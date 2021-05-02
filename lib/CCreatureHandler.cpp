@@ -181,6 +181,20 @@ void CCreature::fillWarMachine()
 	warMachine = ArtifactID::NONE; //this creature is not artifact
 }
 
+void CCreature::updateOppositeBonuses()
+{
+	auto & bonusList = getExportedBonusList();
+	for(auto & bonus : bonusList)
+	{
+		if(bonus->effectRange == Bonus::ONLY_ENEMY_ARMY //Opposite Side bonuses should not be exported from CREATURE node.
+			|| (bonus->propagator && bonus->propagator->getPropagatorType() == CBonusSystemNode::BATTLE))
+		{
+			bonus->effectRange == Bonus::ONLY_ENEMY_ARMY;
+			bonus->propagator.reset();
+		}
+	}
+}
+
 static void AddAbility(CCreature *cre, const JsonVector &ability_vec)
 {
 	auto nsf = std::make_shared<Bonus>();
